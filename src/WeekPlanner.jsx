@@ -43,6 +43,12 @@ const getWeekDates = (offset) => {
   });
 };
 
+const getWeekKey = (offset) => {
+  const dates = getWeekDates(offset);
+  const mon = dates[0];
+  return `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, "0")}-${String(mon.getDate()).padStart(2, "0")}`;
+};
+
 const formatWeekRange = (dates) => {
   const m1 = dates[0].toLocaleString("default", { month: "short" });
   const m2 = dates[6].toLocaleString("default", { month: "short" });
@@ -55,6 +61,47 @@ const initialTiles = () => {
   const tiles = {};
   DAYS.forEach((d) => (tiles[d] = []));
   return tiles;
+};
+
+// localStorage persistence
+const STORAGE_KEY = "wtw-planner";
+
+const loadWeek = (weekKey) => {
+  try {
+    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    return data[weekKey] || null;
+  } catch {
+    return null;
+  }
+};
+
+const saveWeek = (weekKey, tiles) => {
+  try {
+    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    data[weekKey] = tiles;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {}
+};
+
+const syncIdCounter = (tiles) => {
+  for (const day of DAYS) {
+    for (const t of tiles[day] || []) {
+      const num = parseInt(t.id?.replace("tile-", ""), 10);
+      if (!isNaN(num) && num >= idCounter) idCounter = num + 1;
+    }
+  }
+};
+
+// Responsive hook
+const useMediaQuery = (query) => {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const handler = (e) => setMatches(e.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, [query]);
+  return matches;
 };
 
 // Tile editor modal
@@ -156,15 +203,16 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
 };
 
 // Individual tile
-const Tile = ({ tile, onEdit, onDragStart }) => {
+const Tile = ({ tile, dayName, onEdit, onDragStart }) => {
   const hasTime = tile.startTime && tile.startTime !== "No time";
   const hasDuration = tile.duration && tile.duration !== "No duration";
 
   return (
     <div
+      data-tile
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData("text/plain", JSON.stringify(tile));
+        e.dataTransfer.setData("text/plain", JSON.stringify({ ...tile, sourceDay: dayName }));
         onDragStart(tile);
       }}
       onClick={() => onEdit(tile)}
@@ -194,15 +242,50 @@ const Tile = ({ tile, onEdit, onDragStart }) => {
   );
 };
 
-// Day column
+// Day column with drop index tracking for reordering
 const DayColumn = ({ dayName, date, tiles, onDrop, onEdit, onDragStart, onAdd, isToday }) => {
   const [over, setOver] = useState(false);
+  const [dropIndex, setDropIndex] = useState(-1);
+  const tilesRef = useRef(null);
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setOver(true);
+    if (tilesRef.current) {
+      const tileElements = tilesRef.current.querySelectorAll("[data-tile]");
+      let idx = tiles.length;
+      for (let i = 0; i < tileElements.length; i++) {
+        const rect = tileElements[i].getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2) {
+          idx = i;
+          break;
+        }
+      }
+      setDropIndex(idx);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setOver(false);
+    setDropIndex(-1);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setOver(false);
+    onDrop(dayName, e, dropIndex);
+    setDropIndex(-1);
+  };
+
+  const dropIndicator = (
+    <div style={{ height: 3, background: "#3b82f6", borderRadius: 2, margin: "2px 4px" }} />
+  );
 
   return (
     <div
-      onDragOver={(e) => { e.preventDefault(); setOver(true); }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => { e.preventDefault(); setOver(false); onDrop(dayName, e); }}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
       style={{
         flex: 1, minWidth: 0, display: "flex", flexDirection: "column",
         background: over ? "#1e293b" : isToday ? "#0f172a" : "transparent",
@@ -226,15 +309,19 @@ const DayColumn = ({ dayName, date, tiles, onDrop, onEdit, onDragStart, onAdd, i
       </div>
 
       {/* Tiles */}
-      <div style={{ flex: 1, padding: 8, minHeight: 120, display: "flex", flexDirection: "column", gap: 0 }}>
-        {tiles.map((t) => (
-          <Tile key={t.id} tile={t} onEdit={onEdit} onDragStart={onDragStart} />
+      <div ref={tilesRef} style={{ flex: 1, padding: 8, minHeight: 120, display: "flex", flexDirection: "column", gap: 0 }}>
+        {tiles.map((t, i) => (
+          <div key={t.id}>
+            {over && dropIndex === i && dropIndicator}
+            <Tile tile={t} dayName={dayName} onEdit={onEdit} onDragStart={onDragStart} />
+          </div>
         ))}
+        {over && dropIndex === tiles.length && dropIndicator}
       </div>
 
       {/* Add button */}
       <div style={{ padding: "6px 8px 10px" }}>
-        <button onClick={() => onAdd(dayName)} style={{
+        <button onClick={() => onAdd(dayName)} className="wtw-add-btn" style={{
           width: "100%", padding: "8px 0", fontSize: 18, fontWeight: 300,
           background: "transparent", border: "1px dashed #334155", borderRadius: 8,
           color: "#475569", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
@@ -279,51 +366,105 @@ const PrintStyles = () => {
 
 export default function WeekPlanner() {
   const [weekOffset, setWeekOffset] = useState(0);
-  const [tiles, setTiles] = useState(initialTiles);
-  const [editing, setEditing] = useState(null); // { day, tile? }
+  const [tiles, setTiles] = useState(() => {
+    const saved = loadWeek(getWeekKey(0));
+    if (saved) { syncIdCounter(saved); return saved; }
+    return initialTiles();
+  });
+  const [editing, setEditing] = useState(null);
   const [dragging, setDragging] = useState(null);
+
+  const isMobile = useMediaQuery("(max-width: 768px)");
+  const [selectedDay, setSelectedDay] = useState(() => {
+    const dow = new Date().getDay();
+    return DAYS[dow === 0 ? 6 : dow - 1];
+  });
+
+  const weekKey = getWeekKey(weekOffset);
+  const weekKeyRef = useRef(weekKey);
+  weekKeyRef.current = weekKey;
+
   const dates = getWeekDates(weekOffset);
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
 
-  const handleDrop = useCallback((targetDay, e) => {
+  // Persist tiles to localStorage on every mutation
+  const persistTiles = useCallback((updater) => {
+    setTiles((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      saveWeek(weekKeyRef.current, next);
+      return next;
+    });
+  }, []);
+
+  // Load tiles when navigating weeks (skip initial mount — already loaded in useState)
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    const saved = loadWeek(weekKey);
+    if (saved) {
+      syncIdCounter(saved);
+      setTiles(saved);
+    } else {
+      setTiles(initialTiles());
+    }
+  }, [weekKey]);
+
+  const handleDrop = useCallback((targetDay, e, dropIndex) => {
     try {
-      const data = JSON.parse(e.dataTransfer.getData("text/plain"));
-      if (!data?.id) return;
-      setTiles((prev) => {
+      const raw = JSON.parse(e.dataTransfer.getData("text/plain"));
+      if (!raw?.id) return;
+      const { sourceDay, ...tileData } = raw;
+
+      persistTiles((prev) => {
         const next = { ...prev };
-        // Remove from source
-        for (const day of DAYS) {
-          next[day] = next[day].filter((t) => t.id !== data.id);
+
+        if (sourceDay === targetDay && dropIndex >= 0) {
+          // Same-day reorder
+          const dayTiles = [...prev[targetDay]];
+          const currentIndex = dayTiles.findIndex((t) => t.id === tileData.id);
+          if (currentIndex === -1) return prev;
+          dayTiles.splice(currentIndex, 1);
+          const adjustedIndex = dropIndex > currentIndex ? dropIndex - 1 : dropIndex;
+          dayTiles.splice(adjustedIndex, 0, tileData);
+          next[targetDay] = dayTiles;
+        } else {
+          // Cross-day move (with position)
+          for (const day of DAYS) {
+            next[day] = next[day].filter((t) => t.id !== tileData.id);
+          }
+          const targetTiles = [...next[targetDay]];
+          const insertIdx = dropIndex >= 0 ? Math.min(dropIndex, targetTiles.length) : targetTiles.length;
+          targetTiles.splice(insertIdx, 0, tileData);
+          next[targetDay] = targetTiles;
         }
-        // Add to target
-        next[targetDay] = [...next[targetDay], data];
         return next;
       });
     } catch {}
     setDragging(null);
-  }, []);
+  }, [persistTiles]);
 
   const handleSave = useCallback((tile) => {
     const day = editing.day;
-    setTiles((prev) => {
+    persistTiles((prev) => {
       const next = { ...prev };
       if (tile.id) {
-        // Update existing — could be in any day
         for (const d of DAYS) {
           next[d] = next[d].map((t) => (t.id === tile.id ? tile : t));
         }
       } else {
-        // New tile
         next[day] = [...next[day], { ...tile, id: uid() }];
       }
       return next;
     });
     setEditing(null);
-  }, [editing]);
+  }, [editing, persistTiles]);
 
   const handleDelete = useCallback((id) => {
-    setTiles((prev) => {
+    persistTiles((prev) => {
       const next = { ...prev };
       for (const d of DAYS) {
         next[d] = next[d].filter((t) => t.id !== id);
@@ -331,7 +472,7 @@ export default function WeekPlanner() {
       return next;
     });
     setEditing(null);
-  }, []);
+  }, [persistTiles]);
 
   const handlePrint = () => window.print();
 
@@ -345,9 +486,9 @@ export default function WeekPlanner() {
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
 
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, padding: "0 4px" }}>
+      <div className="wtw-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, padding: "0 4px" }}>
         <div>
-          <h1 data-print-header style={{
+          <h1 data-print-header className="wtw-title" style={{
             fontSize: 28, fontWeight: 800, color: "#e2e8f0", margin: 0,
             letterSpacing: -0.5, fontFamily: "'DM Sans', sans-serif",
           }}>
@@ -358,7 +499,7 @@ export default function WeekPlanner() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div className="wtw-nav" style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button data-no-print onClick={() => setWeekOffset((w) => w - 1)} style={{
             width: 36, height: 36, borderRadius: 8, border: "1px solid #334155",
             background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 16, fontWeight: 700,
@@ -376,9 +517,9 @@ export default function WeekPlanner() {
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>&#8250;</button>
 
-          <div style={{ width: 1, height: 24, background: "#1e293b", margin: "0 6px" }} />
+          <div className="wtw-divider" style={{ width: 1, height: 24, background: "#1e293b", margin: "0 6px" }} />
 
-          <button data-no-print onClick={handlePrint} style={{
+          <button data-no-print onClick={handlePrint} className="wtw-print-btn" style={{
             padding: "7px 16px", borderRadius: 8, border: "1px solid #334155",
             background: "transparent", color: "#94a3b8", cursor: "pointer",
             fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
@@ -390,37 +531,93 @@ export default function WeekPlanner() {
         </div>
       </div>
 
+      {/* Mobile day tabs */}
+      {isMobile && (
+        <div data-no-print style={{
+          display: "flex", gap: 6, overflowX: "auto", padding: "0 0 12px",
+          WebkitOverflowScrolling: "touch", scrollbarWidth: "none",
+        }}>
+          {DAYS.map((day, i) => {
+            const d = dates[i];
+            const dayStr = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+            const isSelected = day === selectedDay;
+            const isDayToday = dayStr === todayStr;
+            return (
+              <button key={day} onClick={() => setSelectedDay(day)} style={{
+                flex: "0 0 auto", padding: "10px 16px", borderRadius: 10,
+                border: isSelected ? "1px solid #3b82f6" : "1px solid #1e293b",
+                background: isSelected ? "#1e293b" : "transparent",
+                color: isSelected ? "#e2e8f0" : isDayToday ? "#3b82f6" : "#64748b",
+                fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+                cursor: "pointer", textTransform: "uppercase", letterSpacing: 1,
+                whiteSpace: "nowrap",
+              }}>
+                {SHORT_DAYS[i]} {d.getDate()}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Week grid */}
-      <div data-print-grid style={{
-        display: "flex", gap: 2, flex: 1,
-        background: "#141c2e", borderRadius: 16, overflow: "hidden",
-        border: "1px solid #1e293b",
-      }}>
-        {DAYS.map((day, i) => {
-          const d = dates[i];
-          const dayStr = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-          return (
-            <DayColumn
-              key={day}
-              dayName={day}
-              date={d}
-              tiles={tiles[day]}
-              isToday={dayStr === todayStr}
-              onDrop={handleDrop}
-              onEdit={(tile) => setEditing({ day, tile })}
-              onDragStart={setDragging}
-              onAdd={(dayName) => setEditing({ day: dayName, tile: null })}
-            />
-          );
-        })}
-      </div>
+      {isMobile ? (
+        <div data-print-grid style={{
+          flex: 1, background: "#141c2e", borderRadius: 16,
+          border: "1px solid #1e293b", overflow: "hidden",
+        }}>
+          {(() => {
+            const i = DAYS.indexOf(selectedDay);
+            const d = dates[i];
+            const dayStr = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+            return (
+              <DayColumn
+                dayName={selectedDay}
+                date={d}
+                tiles={tiles[selectedDay]}
+                isToday={dayStr === todayStr}
+                onDrop={handleDrop}
+                onEdit={(tile) => setEditing({ day: selectedDay, tile })}
+                onDragStart={setDragging}
+                onAdd={(dayName) => setEditing({ day: dayName, tile: null })}
+              />
+            );
+          })()}
+        </div>
+      ) : (
+        <div data-print-grid style={{
+          display: "flex", gap: 2, flex: 1,
+          background: "#141c2e", borderRadius: 16, overflow: "hidden",
+          border: "1px solid #1e293b",
+        }}>
+          {DAYS.map((day, i) => {
+            const d = dates[i];
+            const dayStr = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+            return (
+              <DayColumn
+                key={day}
+                dayName={day}
+                date={d}
+                tiles={tiles[day]}
+                isToday={dayStr === todayStr}
+                onDrop={handleDrop}
+                onEdit={(tile) => setEditing({ day, tile })}
+                onDragStart={setDragging}
+                onAdd={(dayName) => setEditing({ day: dayName, tile: null })}
+              />
+            );
+          })}
+        </div>
+      )}
 
       {/* Footer hint */}
       <div data-no-print style={{
         textAlign: "center", padding: "14px 0 4px", fontSize: 12, color: "#334155",
         fontFamily: "'DM Sans', sans-serif", fontWeight: 500,
       }}>
-        Click + to add blocks · Drag tiles between days · Click any tile to edit
+        {isMobile
+          ? "Tap + to add blocks · Tap day tabs to navigate · Tap any tile to edit"
+          : "Click + to add blocks · Drag tiles to reorder or move between days · Click any tile to edit"
+        }
       </div>
 
       {/* Modal */}

@@ -10,3 +10,33 @@ body {
   min-height: 100vh;
   background: #0b1120;
 }
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .wtw-header {
+    flex-direction: column !important;
+    gap: 12px !important;
+    align-items: stretch !important;
+  }
+
+  .wtw-title {
+    font-size: 22px !important;
+  }
+
+  .wtw-nav {
+    justify-content: center !important;
+  }
+
+  .wtw-divider {
+    display: none !important;
+  }
+
+  .wtw-print-btn {
+    display: none !important;
+  }
+
+  .wtw-add-btn {
+    padding: 14px 0 !important;
+    font-size: 24px !important;
+  }
+}
