@@ -92,6 +92,68 @@ const syncIdCounter = (tiles) => {
   }
 };
 
+// ICS export helpers
+const parseTime12to24 = (timeStr) => {
+  const [time, period] = timeStr.split(" ");
+  let [hours, minutes] = time.split(":").map(Number);
+  if (period === "PM" && hours !== 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+  return { hours, minutes };
+};
+
+const parseDurationMinutes = (durStr) => {
+  if (!durStr || durStr === "No duration") return 60;
+  if (durStr.includes("min")) return parseInt(durStr);
+  return parseFloat(durStr) * 60;
+};
+
+const formatICSDate = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+};
+
+const formatICSDateTime = (date, hours, minutes) =>
+  `${formatICSDate(date)}T${String(hours).padStart(2, "0")}${String(minutes).padStart(2, "0")}00`;
+
+const generateICS = (tiles, dates) => {
+  const events = [];
+  DAYS.forEach((day, i) => {
+    const date = dates[i];
+    for (const tile of tiles[day]) {
+      const hasTime = tile.startTime && tile.startTime !== "No time";
+      const uid = `${tile.id}-${formatICSDate(date)}@wtw-planner`;
+      if (hasTime) {
+        const { hours, minutes } = parseTime12to24(tile.startTime);
+        const durMin = parseDurationMinutes(tile.duration);
+        const endTotalMin = hours * 60 + minutes + durMin;
+        const endH = Math.floor(endTotalMin / 60);
+        const endM = endTotalMin % 60;
+        events.push(
+          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:${formatICSDateTime(date, hours, minutes)}\r\nDTEND:${formatICSDateTime(date, endH, endM)}\r\nSUMMARY:${tile.label}\r\nEND:VEVENT`
+        );
+      } else {
+        const nextDay = new Date(date.getTime() + 86400000);
+        events.push(
+          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART;VALUE=DATE:${formatICSDate(date)}\r\nDTEND;VALUE=DATE:${formatICSDate(nextDay)}\r\nSUMMARY:${tile.label}\r\nEND:VEVENT`
+        );
+      }
+    }
+  });
+  return `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Win the Week//Planner//EN\r\n${events.join("\r\n")}\r\nEND:VCALENDAR`;
+};
+
+const downloadICS = (content, filename) => {
+  const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
 // Responsive hook
 const useMediaQuery = (query) => {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
@@ -476,6 +538,11 @@ export default function WeekPlanner() {
 
   const handlePrint = () => window.print();
 
+  const handleExport = () => {
+    const ics = generateICS(tiles, dates);
+    downloadICS(ics, `week-${weekKey}.ics`);
+  };
+
   return (
     <div data-print-root style={{
       minHeight: "100vh", background: "#0b1120",
@@ -527,6 +594,15 @@ export default function WeekPlanner() {
             display: "flex", alignItems: "center", gap: 6,
           }}>
             <span style={{ fontSize: 15 }}>&#9112;</span> Print
+          </button>
+          <button data-no-print onClick={handleExport} className="wtw-export-btn" style={{
+            padding: "7px 16px", borderRadius: 8, border: "1px solid #334155",
+            background: "transparent", color: "#94a3b8", cursor: "pointer",
+            fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+            textTransform: "uppercase", letterSpacing: 1,
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span style={{ fontSize: 15 }}>&#128197;</span> Export
           </button>
         </div>
       </div>

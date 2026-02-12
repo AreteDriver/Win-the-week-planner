@@ -31,7 +31,8 @@ body {
     display: none !important;
   }
 
-  .wtw-print-btn {
+  .wtw-print-btn,
+  .wtw-export-btn {
     display: none !important;
   }
 
