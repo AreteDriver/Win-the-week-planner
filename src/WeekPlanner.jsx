@@ -56,8 +56,8 @@ const formatWeekRange = (dates) => {
   const m1 = dates[0].toLocaleString("default", { month: "short" });
   const m2 = dates[6].toLocaleString("default", { month: "short" });
   const y = dates[0].getFullYear();
-  if (m1 === m2) return `${m1} ${dates[0].getDate()} – ${dates[6].getDate()}, ${y}`;
-  return `${m1} ${dates[0].getDate()} – ${m2} ${dates[6].getDate()}, ${y}`;
+  if (m1 === m2) return `${m1} ${dates[0].getDate()} \u2013 ${dates[6].getDate()}, ${y}`;
+  return `${m1} ${dates[0].getDate()} \u2013 ${m2} ${dates[6].getDate()}, ${y}`;
 };
 
 const initialTiles = () => {
@@ -68,6 +68,7 @@ const initialTiles = () => {
 
 // localStorage persistence
 const STORAGE_KEY = "wtw-planner";
+const RECURRING_KEY = "wtw-recurring";
 
 const loadWeek = (weekKey) => {
   try {
@@ -86,6 +87,20 @@ const saveWeek = (weekKey, tiles) => {
   } catch {}
 };
 
+const loadRecurring = () => {
+  try {
+    return JSON.parse(localStorage.getItem(RECURRING_KEY) || "null") || initialTiles();
+  } catch {
+    return initialTiles();
+  }
+};
+
+const saveRecurring = (templates) => {
+  try {
+    localStorage.setItem(RECURRING_KEY, JSON.stringify(templates));
+  } catch {}
+};
+
 const syncIdCounter = (tiles) => {
   for (const day of DAYS) {
     for (const t of tiles[day] || []) {
@@ -93,6 +108,22 @@ const syncIdCounter = (tiles) => {
       if (!isNaN(num) && num >= idCounter) idCounter = num + 1;
     }
   }
+};
+
+const loadOrPopulateWeek = (weekKey) => {
+  const saved = loadWeek(weekKey);
+  if (saved) {
+    syncIdCounter(saved);
+    return saved;
+  }
+  const recurring = loadRecurring();
+  const populated = initialTiles();
+  for (const day of DAYS) {
+    if (recurring[day]?.length) {
+      populated[day] = recurring[day].map((t) => ({ ...t, id: uid() }));
+    }
+  }
+  return populated;
 };
 
 // ICS export helpers
@@ -126,7 +157,7 @@ const generateICS = (tiles, dates) => {
     const date = dates[i];
     for (const tile of tiles[day]) {
       const hasTime = tile.startTime && tile.startTime !== "No time";
-      const uid = `${tile.id}-${formatICSDate(date)}@wtw-planner`;
+      const eventUid = `${tile.id}-${formatICSDate(date)}@wtw-planner`;
       let desc = "";
       if (tile.type === "meal") {
         const parts = [tile.mealType];
@@ -142,12 +173,12 @@ const generateICS = (tiles, dates) => {
         const endH = Math.floor(endTotalMin / 60);
         const endM = endTotalMin % 60;
         events.push(
-          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:${formatICSDateTime(date, hours, minutes)}\r\nDTEND:${formatICSDateTime(date, endH, endM)}\r\nSUMMARY:${tile.label}${desc}\r\nEND:VEVENT`
+          `BEGIN:VEVENT\r\nUID:${eventUid}\r\nDTSTART:${formatICSDateTime(date, hours, minutes)}\r\nDTEND:${formatICSDateTime(date, endH, endM)}\r\nSUMMARY:${tile.label}${desc}\r\nEND:VEVENT`
         );
       } else {
         const nextDay = new Date(date.getTime() + 86400000);
         events.push(
-          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART;VALUE=DATE:${formatICSDate(date)}\r\nDTEND;VALUE=DATE:${formatICSDate(nextDay)}\r\nSUMMARY:${tile.label}${desc}\r\nEND:VEVENT`
+          `BEGIN:VEVENT\r\nUID:${eventUid}\r\nDTSTART;VALUE=DATE:${formatICSDate(date)}\r\nDTEND;VALUE=DATE:${formatICSDate(nextDay)}\r\nSUMMARY:${tile.label}${desc}\r\nEND:VEVENT`
         );
       }
     }
@@ -177,8 +208,11 @@ const useMediaQuery = (query) => {
   return matches;
 };
 
+// Shared inline style helpers (reference CSS variables)
+const V = (name) => `var(--wtw-${name})`;
+
 // Tile editor modal
-const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
+const TileEditor = ({ tile, onSave, onDelete, onCancel, onDuplicate, editingDay }) => {
   const [label, setLabel] = useState(tile?.label || "");
   const [color, setColor] = useState(tile?.color || PALETTE[0]);
   const [startTime, setStartTime] = useState(tile?.startTime || "No time");
@@ -191,6 +225,8 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
   const [carbs, setCarbs] = useState(tile?.carbs || "");
   const [fat, setFat] = useState(tile?.fat || "");
   const [notes, setNotes] = useState(tile?.notes || "");
+  const [recurring, setRecurring] = useState(tile?.recurring || false);
+  const [showDupDays, setShowDupDays] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -198,7 +234,7 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
   }, []);
 
   const buildTile = () => {
-    const base = { ...tile, label, color, startTime, duration, type };
+    const base = { ...tile, label, color, startTime, duration, type, recurring };
     if (type === "meal") {
       return { ...base, mealType, ingredients, calories, protein, carbs, fat, notes };
     }
@@ -207,22 +243,29 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
 
   const inputStyle = {
     width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13, fontFamily: "'DM Sans', sans-serif",
-    background: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", outline: "none",
+    background: V("bg-input"), border: `1px solid ${V("border")}`, borderRadius: 8, color: V("text"), outline: "none",
   };
 
-  const labelStyle = { fontSize: 11, color: "#64748b", fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 };
+  const labelStyle = { fontSize: 11, color: V("text-muted"), fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 };
+
+  const navBtnStyle = {
+    padding: "7px 14px", borderRadius: 8, border: `1px solid ${V("border")}`,
+    background: "transparent", color: V("text-secondary"), cursor: "pointer",
+    fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+    textTransform: "uppercase", letterSpacing: 1,
+  };
 
   return (
     <div style={{
-      position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", backdropFilter: "blur(4px)",
+      position: "fixed", inset: 0, background: V("overlay"), backdropFilter: "blur(4px)",
       display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
     }} onClick={onCancel}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background: "#1e293b", borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw",
-        boxShadow: "0 25px 60px rgba(0,0,0,0.5)", border: "1px solid #334155",
+        background: V("bg-surface"), borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw",
+        boxShadow: `0 25px 60px ${V("shadow")}`, border: `1px solid ${V("border")}`,
         fontFamily: "'DM Sans', sans-serif", maxHeight: "90vh", overflowY: "auto",
       }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: V("text-secondary"), textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16 }}>
           {tile?.id ? "Edit Block" : "New Block"}
         </div>
 
@@ -232,9 +275,9 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
             <button key={t} onClick={() => setType(t)} style={{
               flex: 1, padding: "8px 0", fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
               textTransform: "uppercase", letterSpacing: 1, borderRadius: 8, cursor: "pointer",
-              border: type === t ? "1px solid #3b82f6" : "1px solid #334155",
-              background: type === t ? "#1e3a5f" : "transparent",
-              color: type === t ? "#93c5fd" : "#64748b",
+              border: type === t ? `1px solid ${V("accent")}` : `1px solid ${V("border")}`,
+              background: type === t ? V("accent-dim") : "transparent",
+              color: type === t ? V("accent-text") : V("text-muted"),
             }}>{t === "meal" ? "\ud83c\udf7d\ufe0f Meal" : "\u2611 Task"}</button>
           ))}
         </div>
@@ -242,9 +285,7 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
         <input ref={inputRef} value={label} onChange={(e) => setLabel(e.target.value)}
           placeholder={type === "meal" ? "Meal name..." : "What needs doing?"}
           onKeyDown={(e) => { if (e.key === "Enter" && label.trim()) onSave(buildTile()); }}
-          style={{
-            ...inputStyle, padding: "12px 14px", fontSize: 15, borderRadius: 10, marginBottom: 18,
-          }}
+          style={{ ...inputStyle, padding: "12px 14px", fontSize: 15, borderRadius: 10, marginBottom: 18 }}
         />
 
         {/* Time row */}
@@ -310,6 +351,24 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
           </>
         )}
 
+        {/* Recurring toggle */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+          <button onClick={() => setRecurring(!recurring)} style={{
+            width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer",
+            background: recurring ? V("accent") : V("border"),
+            position: "relative", transition: "background 0.2s",
+          }}>
+            <div style={{
+              width: 16, height: 16, borderRadius: 8, background: "#fff",
+              position: "absolute", top: 2,
+              left: recurring ? 18 : 2, transition: "left 0.2s",
+            }} />
+          </button>
+          <span style={{ fontSize: 12, color: V("text-secondary"), fontWeight: 600 }}>
+            Repeat weekly
+          </span>
+        </div>
+
         {/* Color picker */}
         <div style={labelStyle}>Color</div>
         <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
@@ -327,24 +386,39 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
         </div>
 
         {/* Actions */}
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
           {tile?.id && (
             <button onClick={() => onDelete(tile.id)} style={{
               padding: "9px 16px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
-              background: "transparent", border: "1px solid #7f1d1d", borderRadius: 8, color: "#fca5a5",
+              background: "transparent", border: `1px solid ${V("delete-border")}`, borderRadius: 8, color: V("delete-text"),
               cursor: "pointer", marginRight: "auto",
             }}>Delete</button>
           )}
-          <button onClick={onCancel} style={{
-            padding: "9px 18px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
-            background: "transparent", border: "1px solid #475569", borderRadius: 8, color: "#94a3b8", cursor: "pointer",
-          }}>Cancel</button>
+          {tile?.id && (
+            <button onClick={() => setShowDupDays(!showDupDays)} style={navBtnStyle}>Duplicate</button>
+          )}
+          <button onClick={onCancel} style={navBtnStyle}>Cancel</button>
           <button disabled={!label.trim()} onClick={() => onSave(buildTile())} style={{
             padding: "9px 20px", fontSize: 13, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
-            background: label.trim() ? "#3b82f6" : "#1e3a5f", border: "none", borderRadius: 8,
-            color: label.trim() ? "#fff" : "#64748b", cursor: label.trim() ? "pointer" : "not-allowed",
+            background: label.trim() ? V("accent") : V("accent-dim"), border: "none", borderRadius: 8,
+            color: label.trim() ? "#fff" : V("text-muted"), cursor: label.trim() ? "pointer" : "not-allowed",
           }}>Save</button>
         </div>
+
+        {/* Duplicate day picker */}
+        {showDupDays && (
+          <div style={{ display: "flex", gap: 4, marginTop: 12, justifyContent: "center" }}>
+            {DAYS.map((d, i) => (
+              <button key={d} onClick={() => onDuplicate(buildTile(), d)}
+                style={{
+                  ...navBtnStyle, padding: "6px 8px", fontSize: 10,
+                  background: d === editingDay ? V("accent-dim") : "transparent",
+                  color: d === editingDay ? V("accent-text") : V("text-secondary"),
+                }}
+              >{SHORT_DAYS[i]}</button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -374,10 +448,14 @@ const Tile = ({ tile, dayName, onEdit, onDragStart }) => {
         userSelect: "none",
         transition: "box-shadow 0.2s, transform 0.15s",
         marginBottom: 6,
+        position: "relative",
       }}
       onMouseEnter={(e) => { e.currentTarget.style.boxShadow = `0 4px 16px ${tile.color.border}30`; e.currentTarget.style.transform = "translateY(-1px)"; }}
       onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.transform = "translateY(0)"; }}
     >
+      {tile.recurring && (
+        <div style={{ position: "absolute", top: 4, right: 6, fontSize: 10, opacity: 0.5 }} title="Repeats weekly">{"\ud83d\udd01"}</div>
+      )}
       {tile.type === "meal" && (
         <div style={{ fontSize: 10, fontWeight: 800, color: tile.color.text, opacity: 0.7, textTransform: "uppercase", letterSpacing: 1, marginBottom: 3, fontFamily: "'DM Sans', sans-serif" }}>
           {MEAL_ICONS[tile.mealType]} {tile.mealType}
@@ -388,13 +466,13 @@ const Tile = ({ tile, dayName, onEdit, onDragStart }) => {
       </div>
       {(hasTime || hasDuration) && (
         <div style={{ fontSize: 11, color: tile.color.text, opacity: 0.7, marginTop: 4, fontFamily: "'DM Mono', monospace", fontWeight: 500 }}>
-          {hasTime ? tile.startTime : ""}{hasTime && hasDuration ? " · " : ""}{hasDuration ? tile.duration : ""}
+          {hasTime ? tile.startTime : ""}{hasTime && hasDuration ? " \u00b7 " : ""}{hasDuration ? tile.duration : ""}
         </div>
       )}
       {tile.type === "meal" && (tile.ingredients || tile.calories) && (
         <div style={{ fontSize: 10, color: tile.color.text, opacity: 0.6, marginTop: 3, fontFamily: "'DM Mono', monospace" }}>
           {tile.ingredients ? `${tile.ingredients.split(",").filter((s) => s.trim()).length} ingredients` : ""}
-          {tile.ingredients && tile.calories ? " · " : ""}
+          {tile.ingredients && tile.calories ? " \u00b7 " : ""}
           {tile.calories ? `${tile.calories} cal` : ""}
         </div>
       )}
@@ -438,7 +516,7 @@ const DayColumn = ({ dayName, date, tiles, onDrop, onEdit, onDragStart, onAdd, i
   };
 
   const dropIndicator = (
-    <div style={{ height: 3, background: "#3b82f6", borderRadius: 2, margin: "2px 4px" }} />
+    <div style={{ height: 3, background: V("accent"), borderRadius: 2, margin: "2px 4px" }} />
   );
 
   return (
@@ -448,22 +526,22 @@ const DayColumn = ({ dayName, date, tiles, onDrop, onEdit, onDragStart, onAdd, i
       onDrop={handleDrop}
       style={{
         flex: 1, minWidth: 0, display: "flex", flexDirection: "column",
-        background: over ? "#1e293b" : isToday ? "#0f172a" : "transparent",
+        background: over ? V("bg-surface") : isToday ? V("bg-input") : "transparent",
         borderRadius: 12, transition: "background 0.2s",
-        border: isToday ? "1px solid #334155" : "1px solid transparent",
+        border: isToday ? `1px solid ${V("border")}` : "1px solid transparent",
       }}
     >
       {/* Day header */}
       <div style={{
         padding: "14px 12px 10px", textAlign: "center",
-        borderBottom: "1px solid #1e293b",
+        borderBottom: `1px solid ${V("border-inner")}`,
       }}>
         <div style={{
-          fontSize: 11, fontWeight: 800, color: isToday ? "#3b82f6" : "#64748b",
+          fontSize: 11, fontWeight: 800, color: isToday ? V("accent") : V("text-muted"),
           textTransform: "uppercase", letterSpacing: 2, fontFamily: "'DM Sans', sans-serif",
         }}>{SHORT_DAYS[DAYS.indexOf(dayName)]}</div>
         <div style={{
-          fontSize: 20, fontWeight: 300, color: isToday ? "#e2e8f0" : "#475569",
+          fontSize: 20, fontWeight: 300, color: isToday ? V("text") : V("text-dim"),
           fontFamily: "'DM Sans', sans-serif", marginTop: 2,
         }}>{date.getDate()}</div>
       </div>
@@ -483,12 +561,12 @@ const DayColumn = ({ dayName, date, tiles, onDrop, onEdit, onDragStart, onAdd, i
       <div style={{ padding: "6px 8px 10px" }}>
         <button onClick={() => onAdd(dayName)} className="wtw-add-btn" style={{
           width: "100%", padding: "8px 0", fontSize: 18, fontWeight: 300,
-          background: "transparent", border: "1px dashed #334155", borderRadius: 8,
-          color: "#475569", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+          background: "transparent", border: `1px dashed ${V("border")}`, borderRadius: 8,
+          color: V("text-dim"), cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
           transition: "border-color 0.2s, color 0.2s",
         }}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#3b82f6"; e.currentTarget.style.color = "#3b82f6"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#334155"; e.currentTarget.style.color = "#475569"; }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = V("accent"); e.currentTarget.style.color = V("accent"); }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = V("border"); e.currentTarget.style.color = V("text-dim"); }}
         >+</button>
       </div>
     </div>
@@ -537,7 +615,7 @@ const GroceryList = ({ tiles, weekRange, onClose }) => {
           const name = raw.trim().toLowerCase();
           if (!name) continue;
           if (!map[name]) map[name] = { name, meals: [] };
-          map[name].meals.push(`${day} — ${tile.label}`);
+          map[name].meals.push(`${day} \u2014 ${tile.label}`);
         }
       }
     }
@@ -553,24 +631,24 @@ const GroceryList = ({ tiles, weekRange, onClose }) => {
 
   return (
     <div style={{
-      position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", backdropFilter: "blur(4px)",
+      position: "fixed", inset: 0, background: V("overlay"), backdropFilter: "blur(4px)",
       display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
     }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background: "#1e293b", borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw",
+        background: V("bg-surface"), borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw",
         maxHeight: "80vh", display: "flex", flexDirection: "column",
-        boxShadow: "0 25px 60px rgba(0,0,0,0.5)", border: "1px solid #334155",
+        boxShadow: `0 25px 60px ${V("shadow")}`, border: `1px solid ${V("border")}`,
         fontFamily: "'DM Sans', sans-serif",
       }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#e2e8f0" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: V("text") }}>
               {"\ud83d\uded2"} Grocery List
             </div>
-            <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{weekRange}</div>
+            <div style={{ fontSize: 11, color: V("text-muted"), marginTop: 2 }}>{weekRange}</div>
           </div>
           {items.length > 0 && (
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", background: "#0f172a", padding: "4px 10px", borderRadius: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: V("text-secondary"), background: V("bg-input"), padding: "4px 10px", borderRadius: 12 }}>
               {items.length} item{items.length !== 1 ? "s" : ""}
             </div>
           )}
@@ -578,7 +656,7 @@ const GroceryList = ({ tiles, weekRange, onClose }) => {
 
         <div style={{ flex: 1, overflowY: "auto", marginBottom: 16 }}>
           {items.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "#475569", fontSize: 13 }}>
+            <div style={{ textAlign: "center", padding: "40px 0", color: V("text-dim"), fontSize: 13 }}>
               No meal tiles yet. Add meals to generate a grocery list.
             </div>
           ) : items.map((item) => (
@@ -586,22 +664,22 @@ const GroceryList = ({ tiles, weekRange, onClose }) => {
               display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 6px",
               cursor: "pointer", borderRadius: 6, transition: "background 0.15s",
             }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "#0f172a"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = V("bg-input"); }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
               <div style={{
-                width: 18, height: 18, borderRadius: 4, border: "1px solid #475569", flexShrink: 0, marginTop: 1,
+                width: 18, height: 18, borderRadius: 4, border: `1px solid ${V("text-dim")}`, flexShrink: 0, marginTop: 1,
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: checked[item.name] ? "#3b82f6" : "transparent",
+                background: checked[item.name] ? V("accent") : "transparent",
               }}>
                 {checked[item.name] && <span style={{ color: "#fff", fontSize: 12, lineHeight: 1 }}>{"\u2713"}</span>}
               </div>
               <div>
                 <div style={{
-                  fontSize: 14, color: checked[item.name] ? "#475569" : "#e2e8f0", fontWeight: 500,
+                  fontSize: 14, color: checked[item.name] ? V("text-dim") : V("text"), fontWeight: 500,
                   textDecoration: checked[item.name] ? "line-through" : "none",
                 }}>{item.name}</div>
-                <div style={{ fontSize: 10, color: "#475569", marginTop: 1 }}>
+                <div style={{ fontSize: 10, color: V("text-dim"), marginTop: 1 }}>
                   {item.meals.join(", ")}
                 </div>
               </div>
@@ -613,13 +691,134 @@ const GroceryList = ({ tiles, weekRange, onClose }) => {
           {items.length > 0 && (
             <button onClick={handleCopy} style={{
               padding: "9px 16px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
-              background: "transparent", border: "1px solid #334155", borderRadius: 8, color: "#94a3b8",
+              background: "transparent", border: `1px solid ${V("border")}`, borderRadius: 8, color: V("text-secondary"),
               cursor: "pointer", marginRight: "auto",
             }}>{"\ud83d\udccb"} Copy</button>
           )}
           <button onClick={onClose} style={{
             padding: "9px 18px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
-            background: "#3b82f6", border: "none", borderRadius: 8, color: "#fff", cursor: "pointer",
+            background: V("accent"), border: "none", borderRadius: 8, color: "#fff", cursor: "pointer",
+          }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Nutrition summary modal
+const NutritionSummary = ({ tiles, weekRange, onClose }) => {
+  const dailyTotals = DAYS.map((day, i) => {
+    const meals = (tiles[day] || []).filter((t) => t.type === "meal");
+    return {
+      day: SHORT_DAYS[i],
+      calories: meals.reduce((s, t) => s + (parseFloat(t.calories) || 0), 0),
+      protein: meals.reduce((s, t) => s + (parseFloat(t.protein) || 0), 0),
+      carbs: meals.reduce((s, t) => s + (parseFloat(t.carbs) || 0), 0),
+      fat: meals.reduce((s, t) => s + (parseFloat(t.fat) || 0), 0),
+      count: meals.length,
+    };
+  });
+
+  const weekTotal = dailyTotals.reduce((acc, d) => ({
+    calories: acc.calories + d.calories, protein: acc.protein + d.protein,
+    carbs: acc.carbs + d.carbs, fat: acc.fat + d.fat, count: acc.count + d.count,
+  }), { calories: 0, protein: 0, carbs: 0, fat: 0, count: 0 });
+
+  const activeDays = dailyTotals.filter((d) => d.count > 0).length;
+
+  const cellStyle = { padding: "6px 8px", fontSize: 12, fontFamily: "'DM Mono', monospace", textAlign: "right" };
+  const headerCell = { ...cellStyle, color: V("text-muted"), fontWeight: 700, fontFamily: "'DM Sans', sans-serif", textTransform: "uppercase", letterSpacing: 1, fontSize: 10 };
+  const dayCell = { ...cellStyle, textAlign: "left", fontWeight: 700, fontFamily: "'DM Sans', sans-serif", color: V("text-secondary") };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: V("overlay"), backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+    }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        background: V("bg-surface"), borderRadius: 16, padding: 28, width: 480, maxWidth: "90vw",
+        maxHeight: "80vh", overflowY: "auto",
+        boxShadow: `0 25px 60px ${V("shadow")}`, border: `1px solid ${V("border")}`,
+        fontFamily: "'DM Sans', sans-serif",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: V("text") }}>
+              {"\ud83d\udcca"} Weekly Nutrition
+            </div>
+            <div style={{ fontSize: 11, color: V("text-muted"), marginTop: 2 }}>{weekRange}</div>
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: V("text-secondary"), background: V("bg-input"), padding: "4px 10px", borderRadius: 12 }}>
+            {weekTotal.count} meal{weekTotal.count !== 1 ? "s" : ""}
+          </div>
+        </div>
+
+        {weekTotal.count === 0 ? (
+          <div style={{ textAlign: "center", padding: "40px 0", color: V("text-dim"), fontSize: 13 }}>
+            No meal tiles with macros yet.
+          </div>
+        ) : (
+          <>
+            {/* Weekly totals */}
+            <div style={{
+              display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 20,
+            }}>
+              {[
+                { label: "Calories", value: Math.round(weekTotal.calories), unit: "cal" },
+                { label: "Protein", value: Math.round(weekTotal.protein), unit: "g" },
+                { label: "Carbs", value: Math.round(weekTotal.carbs), unit: "g" },
+                { label: "Fat", value: Math.round(weekTotal.fat), unit: "g" },
+              ].map(({ label, value, unit }) => (
+                <div key={label} style={{
+                  background: V("bg-input"), borderRadius: 10, padding: "12px 10px", textAlign: "center",
+                }}>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: V("text"), fontFamily: "'DM Mono', monospace" }}>
+                    {value}
+                  </div>
+                  <div style={{ fontSize: 10, color: V("text-muted"), fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginTop: 2 }}>
+                    {label} ({unit})
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Daily average */}
+            {activeDays > 0 && (
+              <div style={{ fontSize: 12, color: V("text-muted"), marginBottom: 16, textAlign: "center" }}>
+                Daily avg: {Math.round(weekTotal.calories / activeDays)} cal &middot; {Math.round(weekTotal.protein / activeDays)}g P &middot; {Math.round(weekTotal.carbs / activeDays)}g C &middot; {Math.round(weekTotal.fat / activeDays)}g F
+              </div>
+            )}
+
+            {/* Per-day breakdown */}
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${V("border")}` }}>
+                  <th style={{ ...headerCell, textAlign: "left" }}>Day</th>
+                  <th style={headerCell}>Cal</th>
+                  <th style={headerCell}>P(g)</th>
+                  <th style={headerCell}>C(g)</th>
+                  <th style={headerCell}>F(g)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyTotals.map((d) => (
+                  <tr key={d.day} style={{ borderBottom: `1px solid ${V("border-inner")}`, opacity: d.count > 0 ? 1 : 0.4 }}>
+                    <td style={dayCell}>{d.day}</td>
+                    <td style={{ ...cellStyle, color: V("text") }}>{d.calories || "\u2014"}</td>
+                    <td style={{ ...cellStyle, color: V("text") }}>{d.protein || "\u2014"}</td>
+                    <td style={{ ...cellStyle, color: V("text") }}>{d.carbs || "\u2014"}</td>
+                    <td style={{ ...cellStyle, color: V("text") }}>{d.fat || "\u2014"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
+          <button onClick={onClose} style={{
+            padding: "9px 18px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
+            background: V("accent"), border: "none", borderRadius: 8, color: "#fff", cursor: "pointer",
           }}>Close</button>
         </div>
       </div>
@@ -629,20 +828,26 @@ const GroceryList = ({ tiles, weekRange, onClose }) => {
 
 export default function WeekPlanner() {
   const [weekOffset, setWeekOffset] = useState(0);
-  const [tiles, setTiles] = useState(() => {
-    const saved = loadWeek(getWeekKey(0));
-    if (saved) { syncIdCounter(saved); return saved; }
-    return initialTiles();
-  });
+  const [tiles, setTiles] = useState(() => loadOrPopulateWeek(getWeekKey(0)));
   const [editing, setEditing] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [showGroceries, setShowGroceries] = useState(false);
+  const [showNutrition, setShowNutrition] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem("wtw-theme") || "dark");
 
   const isMobile = useMediaQuery("(max-width: 768px)");
   const [selectedDay, setSelectedDay] = useState(() => {
     const dow = new Date().getDay();
     return DAYS[dow === 0 ? 6 : dow - 1];
   });
+
+  // Theme sync
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("wtw-theme", theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => t === "dark" ? "light" : "dark");
 
   const weekKey = getWeekKey(weekOffset);
   const weekKeyRef = useRef(weekKey);
@@ -661,20 +866,14 @@ export default function WeekPlanner() {
     });
   }, []);
 
-  // Load tiles when navigating weeks (skip initial mount — already loaded in useState)
+  // Load tiles when navigating weeks (skip initial mount)
   const isInitialMount = useRef(true);
   useEffect(() => {
     if (isInitialMount.current) {
       isInitialMount.current = false;
       return;
     }
-    const saved = loadWeek(weekKey);
-    if (saved) {
-      syncIdCounter(saved);
-      setTiles(saved);
-    } else {
-      setTiles(initialTiles());
-    }
+    setTiles(loadOrPopulateWeek(weekKey));
   }, [weekKey]);
 
   const handleDrop = useCallback((targetDay, e, dropIndex) => {
@@ -687,7 +886,6 @@ export default function WeekPlanner() {
         const next = { ...prev };
 
         if (sourceDay === targetDay && dropIndex >= 0) {
-          // Same-day reorder
           const dayTiles = [...prev[targetDay]];
           const currentIndex = dayTiles.findIndex((t) => t.id === tileData.id);
           if (currentIndex === -1) return prev;
@@ -696,7 +894,6 @@ export default function WeekPlanner() {
           dayTiles.splice(adjustedIndex, 0, tileData);
           next[targetDay] = dayTiles;
         } else {
-          // Cross-day move (with position)
           for (const day of DAYS) {
             next[day] = next[day].filter((t) => t.id !== tileData.id);
           }
@@ -711,8 +908,25 @@ export default function WeekPlanner() {
     setDragging(null);
   }, [persistTiles]);
 
+  const updateRecurringStore = useCallback((tile, day, wasRecurring) => {
+    const isRecurring = tile.recurring;
+    if (!isRecurring && !wasRecurring) return;
+    const templates = loadRecurring();
+    if (isRecurring) {
+      const { id, ...template } = tile;
+      // Remove old version by label if exists, then add
+      templates[day] = (templates[day] || []).filter((t) => t.label !== template.label);
+      templates[day].push(template);
+    } else if (wasRecurring) {
+      templates[day] = (templates[day] || []).filter((t) => t.label !== tile.label);
+    }
+    saveRecurring(templates);
+  }, []);
+
   const handleSave = useCallback((tile) => {
     const day = editing.day;
+    const wasRecurring = editing.tile?.recurring;
+
     persistTiles((prev) => {
       const next = { ...prev };
       if (tile.id) {
@@ -724,15 +938,42 @@ export default function WeekPlanner() {
       }
       return next;
     });
+
+    updateRecurringStore(tile, day, wasRecurring);
     setEditing(null);
-  }, [editing, persistTiles]);
+  }, [editing, persistTiles, updateRecurringStore]);
 
   const handleDelete = useCallback((id) => {
+    // Find the tile to check if it was recurring
+    let deletedTile = null;
+    let deletedDay = null;
+    for (const d of DAYS) {
+      const found = tiles[d]?.find((t) => t.id === id);
+      if (found) { deletedTile = found; deletedDay = d; break; }
+    }
+
     persistTiles((prev) => {
       const next = { ...prev };
       for (const d of DAYS) {
         next[d] = next[d].filter((t) => t.id !== id);
       }
+      return next;
+    });
+
+    if (deletedTile?.recurring && deletedDay) {
+      const templates = loadRecurring();
+      templates[deletedDay] = (templates[deletedDay] || []).filter((t) => t.label !== deletedTile.label);
+      saveRecurring(templates);
+    }
+
+    setEditing(null);
+  }, [persistTiles, tiles]);
+
+  const handleDuplicate = useCallback((tile, targetDay) => {
+    const { id, ...tileData } = tile;
+    persistTiles((prev) => {
+      const next = { ...prev };
+      next[targetDay] = [...next[targetDay], { ...tileData, id: uid() }];
       return next;
     });
     setEditing(null);
@@ -745,9 +986,17 @@ export default function WeekPlanner() {
     downloadICS(ics, `week-${weekKey}.ics`);
   };
 
+  const navBtnStyle = {
+    padding: "7px 16px", borderRadius: 8, border: `1px solid ${V("border")}`,
+    background: "transparent", color: V("text-secondary"), cursor: "pointer",
+    fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+    textTransform: "uppercase", letterSpacing: 1,
+    display: "flex", alignItems: "center", gap: 6,
+  };
+
   return (
     <div data-print-root style={{
-      minHeight: "100vh", background: "#0b1120",
+      minHeight: "100vh", background: V("bg-page"),
       fontFamily: "'DM Sans', sans-serif", padding: "24px 20px",
       display: "flex", flexDirection: "column",
     }}>
@@ -758,62 +1007,54 @@ export default function WeekPlanner() {
       <div className="wtw-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, padding: "0 4px" }}>
         <div>
           <h1 data-print-header className="wtw-title" style={{
-            fontSize: 28, fontWeight: 800, color: "#e2e8f0", margin: 0,
+            fontSize: 28, fontWeight: 800, color: V("text"), margin: 0,
             letterSpacing: -0.5, fontFamily: "'DM Sans', sans-serif",
           }}>
             WIN THE WEEK
           </h1>
-          <div data-print-week style={{ fontSize: 14, color: "#64748b", marginTop: 4, fontWeight: 500 }}>
+          <div data-print-week style={{ fontSize: 14, color: V("text-muted"), marginTop: 4, fontWeight: 500 }}>
             {formatWeekRange(dates)}
           </div>
         </div>
 
         <div className="wtw-nav" style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button data-no-print onClick={() => setWeekOffset((w) => w - 1)} style={{
-            width: 36, height: 36, borderRadius: 8, border: "1px solid #334155",
-            background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 16, fontWeight: 700,
+            width: 36, height: 36, borderRadius: 8, border: `1px solid ${V("border")}`,
+            background: "transparent", color: V("text-secondary"), cursor: "pointer", fontSize: 16, fontWeight: 700,
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>&#8249;</button>
           <button data-no-print onClick={() => setWeekOffset(0)} style={{
-            padding: "7px 14px", borderRadius: 8, border: "1px solid #334155",
-            background: weekOffset === 0 ? "#1e293b" : "transparent", color: "#94a3b8",
+            padding: "7px 14px", borderRadius: 8, border: `1px solid ${V("border")}`,
+            background: weekOffset === 0 ? V("bg-surface") : "transparent", color: V("text-secondary"),
             cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
             textTransform: "uppercase", letterSpacing: 1,
           }}>Today</button>
           <button data-no-print onClick={() => setWeekOffset((w) => w + 1)} style={{
-            width: 36, height: 36, borderRadius: 8, border: "1px solid #334155",
-            background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 16, fontWeight: 700,
+            width: 36, height: 36, borderRadius: 8, border: `1px solid ${V("border")}`,
+            background: "transparent", color: V("text-secondary"), cursor: "pointer", fontSize: 16, fontWeight: 700,
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>&#8250;</button>
 
-          <div className="wtw-divider" style={{ width: 1, height: 24, background: "#1e293b", margin: "0 6px" }} />
+          {/* Theme toggle */}
+          <button data-no-print onClick={toggleTheme} title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} style={{
+            width: 36, height: 36, borderRadius: 8, border: `1px solid ${V("border")}`,
+            background: "transparent", color: V("text-secondary"), cursor: "pointer", fontSize: 16,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>{theme === "dark" ? "\u2600\ufe0f" : "\ud83c\udf19"}</button>
 
-          <button data-no-print onClick={handlePrint} className="wtw-print-btn" style={{
-            padding: "7px 16px", borderRadius: 8, border: "1px solid #334155",
-            background: "transparent", color: "#94a3b8", cursor: "pointer",
-            fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
-            textTransform: "uppercase", letterSpacing: 1,
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
+          <div className="wtw-divider" style={{ width: 1, height: 24, background: V("border-inner"), margin: "0 6px" }} />
+
+          <button data-no-print onClick={handlePrint} className="wtw-print-btn" style={navBtnStyle}>
             <span style={{ fontSize: 15 }}>&#9112;</span> Print
           </button>
-          <button data-no-print onClick={handleExport} className="wtw-export-btn" style={{
-            padding: "7px 16px", borderRadius: 8, border: "1px solid #334155",
-            background: "transparent", color: "#94a3b8", cursor: "pointer",
-            fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
-            textTransform: "uppercase", letterSpacing: 1,
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
+          <button data-no-print onClick={handleExport} className="wtw-export-btn" style={navBtnStyle}>
             <span style={{ fontSize: 15 }}>&#128197;</span> Export
           </button>
-          <button data-no-print onClick={() => setShowGroceries(true)} className="wtw-groceries-btn" style={{
-            padding: "7px 16px", borderRadius: 8, border: "1px solid #334155",
-            background: "transparent", color: "#94a3b8", cursor: "pointer",
-            fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
-            textTransform: "uppercase", letterSpacing: 1,
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
+          <button data-no-print onClick={() => setShowGroceries(true)} className="wtw-groceries-btn" style={navBtnStyle}>
             <span style={{ fontSize: 15 }}>{"\ud83d\uded2"}</span> Groceries
+          </button>
+          <button data-no-print onClick={() => setShowNutrition(true)} className="wtw-macros-btn" style={navBtnStyle}>
+            <span style={{ fontSize: 15 }}>{"\ud83d\udcca"}</span> Macros
           </button>
         </div>
       </div>
@@ -832,9 +1073,9 @@ export default function WeekPlanner() {
             return (
               <button key={day} onClick={() => setSelectedDay(day)} style={{
                 flex: "0 0 auto", padding: "10px 16px", borderRadius: 10,
-                border: isSelected ? "1px solid #3b82f6" : "1px solid #1e293b",
-                background: isSelected ? "#1e293b" : "transparent",
-                color: isSelected ? "#e2e8f0" : isDayToday ? "#3b82f6" : "#64748b",
+                border: isSelected ? `1px solid ${V("accent")}` : `1px solid ${V("border-inner")}`,
+                background: isSelected ? V("bg-surface") : "transparent",
+                color: isSelected ? V("text") : isDayToday ? V("accent") : V("text-muted"),
                 fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
                 cursor: "pointer", textTransform: "uppercase", letterSpacing: 1,
                 whiteSpace: "nowrap",
@@ -849,8 +1090,8 @@ export default function WeekPlanner() {
       {/* Week grid */}
       {isMobile ? (
         <div data-print-grid style={{
-          flex: 1, background: "#141c2e", borderRadius: 16,
-          border: "1px solid #1e293b", overflow: "hidden",
+          flex: 1, background: V("bg-card"), borderRadius: 16,
+          border: `1px solid ${V("border-inner")}`, overflow: "hidden",
         }}>
           {(() => {
             const i = DAYS.indexOf(selectedDay);
@@ -873,8 +1114,8 @@ export default function WeekPlanner() {
       ) : (
         <div data-print-grid style={{
           display: "flex", gap: 2, flex: 1,
-          background: "#141c2e", borderRadius: 16, overflow: "hidden",
-          border: "1px solid #1e293b",
+          background: V("bg-card"), borderRadius: 16, overflow: "hidden",
+          border: `1px solid ${V("border-inner")}`,
         }}>
           {DAYS.map((day, i) => {
             const d = dates[i];
@@ -898,12 +1139,12 @@ export default function WeekPlanner() {
 
       {/* Footer hint */}
       <div data-no-print style={{
-        textAlign: "center", padding: "14px 0 4px", fontSize: 12, color: "#334155",
+        textAlign: "center", padding: "14px 0 4px", fontSize: 12, color: V("text-footer"),
         fontFamily: "'DM Sans', sans-serif", fontWeight: 500,
       }}>
         {isMobile
-          ? "Tap + to add blocks · Tap day tabs to navigate · Tap any tile to edit"
-          : "Click + to add blocks · Drag tiles to reorder or move between days · Click any tile to edit"
+          ? "Tap + to add blocks \u00b7 Tap day tabs to navigate \u00b7 Tap any tile to edit"
+          : "Click + to add blocks \u00b7 Drag tiles to reorder or move between days \u00b7 Click any tile to edit"
         }
       </div>
 
@@ -911,13 +1152,18 @@ export default function WeekPlanner() {
       {editing && (
         <TileEditor
           tile={editing.tile || { label: "", color: PALETTE[0], startTime: "No time", duration: "No duration", type: "task" }}
+          editingDay={editing.day}
           onSave={handleSave}
           onDelete={handleDelete}
+          onDuplicate={handleDuplicate}
           onCancel={() => setEditing(null)}
         />
       )}
       {showGroceries && (
         <GroceryList tiles={tiles} weekRange={formatWeekRange(dates)} onClose={() => setShowGroceries(false)} />
+      )}
+      {showNutrition && (
+        <NutritionSummary tiles={tiles} weekRange={formatWeekRange(dates)} onClose={() => setShowNutrition(false)} />
       )}
     </div>
   );
