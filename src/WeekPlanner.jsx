@@ -3,6 +3,9 @@ import { useState, useRef, useCallback, useEffect } from "react";
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SHORT_DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
+const MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snack"];
+const MEAL_ICONS = { Breakfast: "\u2615", Lunch: "\ud83c\udf5c", Dinner: "\ud83c\udf7d\ufe0f", Snack: "\ud83c\udf4e" };
+
 const PALETTE = [
   { name: "Slate", bg: "#e2e8f0", border: "#94a3b8", text: "#1e293b" },
   { name: "Amber", bg: "#fef3c7", border: "#f59e0b", text: "#78350f" },
@@ -124,6 +127,14 @@ const generateICS = (tiles, dates) => {
     for (const tile of tiles[day]) {
       const hasTime = tile.startTime && tile.startTime !== "No time";
       const uid = `${tile.id}-${formatICSDate(date)}@wtw-planner`;
+      let desc = "";
+      if (tile.type === "meal") {
+        const parts = [tile.mealType];
+        if (tile.ingredients) parts.push(tile.ingredients);
+        if (tile.calories) parts.push(`${tile.calories} cal`);
+        if (tile.notes) parts.push(tile.notes);
+        desc = `\r\nDESCRIPTION:${parts.join(" | ")}`;
+      }
       if (hasTime) {
         const { hours, minutes } = parseTime12to24(tile.startTime);
         const durMin = parseDurationMinutes(tile.duration);
@@ -131,12 +142,12 @@ const generateICS = (tiles, dates) => {
         const endH = Math.floor(endTotalMin / 60);
         const endM = endTotalMin % 60;
         events.push(
-          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:${formatICSDateTime(date, hours, minutes)}\r\nDTEND:${formatICSDateTime(date, endH, endM)}\r\nSUMMARY:${tile.label}\r\nEND:VEVENT`
+          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:${formatICSDateTime(date, hours, minutes)}\r\nDTEND:${formatICSDateTime(date, endH, endM)}\r\nSUMMARY:${tile.label}${desc}\r\nEND:VEVENT`
         );
       } else {
         const nextDay = new Date(date.getTime() + 86400000);
         events.push(
-          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART;VALUE=DATE:${formatICSDate(date)}\r\nDTEND;VALUE=DATE:${formatICSDate(nextDay)}\r\nSUMMARY:${tile.label}\r\nEND:VEVENT`
+          `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART;VALUE=DATE:${formatICSDate(date)}\r\nDTEND;VALUE=DATE:${formatICSDate(nextDay)}\r\nSUMMARY:${tile.label}${desc}\r\nEND:VEVENT`
         );
       }
     }
@@ -172,11 +183,34 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
   const [color, setColor] = useState(tile?.color || PALETTE[0]);
   const [startTime, setStartTime] = useState(tile?.startTime || "No time");
   const [duration, setDuration] = useState(tile?.duration || "No duration");
+  const [type, setType] = useState(tile?.type || "task");
+  const [mealType, setMealType] = useState(tile?.mealType || "Lunch");
+  const [ingredients, setIngredients] = useState(tile?.ingredients || "");
+  const [calories, setCalories] = useState(tile?.calories || "");
+  const [protein, setProtein] = useState(tile?.protein || "");
+  const [carbs, setCarbs] = useState(tile?.carbs || "");
+  const [fat, setFat] = useState(tile?.fat || "");
+  const [notes, setNotes] = useState(tile?.notes || "");
   const inputRef = useRef(null);
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 50);
   }, []);
+
+  const buildTile = () => {
+    const base = { ...tile, label, color, startTime, duration, type };
+    if (type === "meal") {
+      return { ...base, mealType, ingredients, calories, protein, carbs, fat, notes };
+    }
+    return base;
+  };
+
+  const inputStyle = {
+    width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13, fontFamily: "'DM Sans', sans-serif",
+    background: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", outline: "none",
+  };
+
+  const labelStyle = { fontSize: 11, color: "#64748b", fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 };
 
   return (
     <div style={{
@@ -184,48 +218,100 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
       display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
     }} onClick={onCancel}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background: "#1e293b", borderRadius: 16, padding: 28, width: 380, maxWidth: "90vw",
+        background: "#1e293b", borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw",
         boxShadow: "0 25px 60px rgba(0,0,0,0.5)", border: "1px solid #334155",
-        fontFamily: "'DM Sans', sans-serif",
+        fontFamily: "'DM Sans', sans-serif", maxHeight: "90vh", overflowY: "auto",
       }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16 }}>
           {tile?.id ? "Edit Block" : "New Block"}
         </div>
 
+        {/* Type toggle */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+          {["task", "meal"].map((t) => (
+            <button key={t} onClick={() => setType(t)} style={{
+              flex: 1, padding: "8px 0", fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+              textTransform: "uppercase", letterSpacing: 1, borderRadius: 8, cursor: "pointer",
+              border: type === t ? "1px solid #3b82f6" : "1px solid #334155",
+              background: type === t ? "#1e3a5f" : "transparent",
+              color: type === t ? "#93c5fd" : "#64748b",
+            }}>{t === "meal" ? "\ud83c\udf7d\ufe0f Meal" : "\u2611 Task"}</button>
+          ))}
+        </div>
+
         <input ref={inputRef} value={label} onChange={(e) => setLabel(e.target.value)}
-          placeholder="What needs doing?"
-          onKeyDown={(e) => { if (e.key === "Enter" && label.trim()) onSave({ ...tile, label, color, startTime, duration }); }}
+          placeholder={type === "meal" ? "Meal name..." : "What needs doing?"}
+          onKeyDown={(e) => { if (e.key === "Enter" && label.trim()) onSave(buildTile()); }}
           style={{
-            width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 15, fontFamily: "'DM Sans', sans-serif",
-            background: "#0f172a", border: "1px solid #334155", borderRadius: 10, color: "#f1f5f9",
-            outline: "none", marginBottom: 18,
+            ...inputStyle, padding: "12px 14px", fontSize: 15, borderRadius: 10, marginBottom: 18,
           }}
         />
 
         {/* Time row */}
         <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Start</div>
-            <select value={startTime} onChange={(e) => setStartTime(e.target.value)} style={{
-              width: "100%", padding: "8px 10px", fontSize: 13, fontFamily: "'DM Sans', sans-serif",
-              background: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", outline: "none",
-            }}>
+            <div style={labelStyle}>Start</div>
+            <select value={startTime} onChange={(e) => setStartTime(e.target.value)} style={inputStyle}>
               {TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Duration</div>
-            <select value={duration} onChange={(e) => setDuration(e.target.value)} style={{
-              width: "100%", padding: "8px 10px", fontSize: 13, fontFamily: "'DM Sans', sans-serif",
-              background: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", outline: "none",
-            }}>
+            <div style={labelStyle}>Duration</div>
+            <select value={duration} onChange={(e) => setDuration(e.target.value)} style={inputStyle}>
               {DURATION_OPTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
         </div>
 
+        {/* Meal-specific fields */}
+        {type === "meal" && (
+          <>
+            <div style={{ marginBottom: 18 }}>
+              <div style={labelStyle}>Meal Type</div>
+              <select value={mealType} onChange={(e) => setMealType(e.target.value)} style={inputStyle}>
+                {MEAL_TYPES.map((m) => <option key={m} value={m}>{MEAL_ICONS[m]} {m}</option>)}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+              <div style={labelStyle}>Ingredients</div>
+              <textarea value={ingredients} onChange={(e) => setIngredients(e.target.value)}
+                placeholder="chicken, rice, broccoli..."
+                rows={2}
+                style={{ ...inputStyle, resize: "vertical" }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+              <div style={labelStyle}>Macros (optional)</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[
+                  { key: "calories", label: "Cal", value: calories, setter: setCalories },
+                  { key: "protein", label: "P(g)", value: protein, setter: setProtein },
+                  { key: "carbs", label: "C(g)", value: carbs, setter: setCarbs },
+                  { key: "fat", label: "F(g)", value: fat, setter: setFat },
+                ].map(({ key, label: lbl, value, setter }) => (
+                  <div key={key} style={{ flex: 1 }}>
+                    <input type="number" placeholder={lbl} value={value} onChange={(e) => setter(e.target.value)}
+                      style={{ ...inputStyle, textAlign: "center", fontSize: 12 }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+              <div style={labelStyle}>Notes</div>
+              <input value={notes} onChange={(e) => setNotes(e.target.value)}
+                placeholder="Recipe link or notes..."
+                style={inputStyle}
+              />
+            </div>
+          </>
+        )}
+
         {/* Color picker */}
-        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>Color</div>
+        <div style={labelStyle}>Color</div>
         <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
           {PALETTE.map((p) => (
             <button key={p.name} onClick={() => setColor(p)}
@@ -253,7 +339,7 @@ const TileEditor = ({ tile, onSave, onDelete, onCancel }) => {
             padding: "9px 18px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
             background: "transparent", border: "1px solid #475569", borderRadius: 8, color: "#94a3b8", cursor: "pointer",
           }}>Cancel</button>
-          <button disabled={!label.trim()} onClick={() => onSave({ ...tile, label, color, startTime, duration })} style={{
+          <button disabled={!label.trim()} onClick={() => onSave(buildTile())} style={{
             padding: "9px 20px", fontSize: 13, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
             background: label.trim() ? "#3b82f6" : "#1e3a5f", border: "none", borderRadius: 8,
             color: label.trim() ? "#fff" : "#64748b", cursor: label.trim() ? "pointer" : "not-allowed",
@@ -292,12 +378,24 @@ const Tile = ({ tile, dayName, onEdit, onDragStart }) => {
       onMouseEnter={(e) => { e.currentTarget.style.boxShadow = `0 4px 16px ${tile.color.border}30`; e.currentTarget.style.transform = "translateY(-1px)"; }}
       onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.transform = "translateY(0)"; }}
     >
+      {tile.type === "meal" && (
+        <div style={{ fontSize: 10, fontWeight: 800, color: tile.color.text, opacity: 0.7, textTransform: "uppercase", letterSpacing: 1, marginBottom: 3, fontFamily: "'DM Sans', sans-serif" }}>
+          {MEAL_ICONS[tile.mealType]} {tile.mealType}
+        </div>
+      )}
       <div style={{ fontSize: 14, fontWeight: 700, color: tile.color.text, lineHeight: 1.3, fontFamily: "'DM Sans', sans-serif" }}>
         {tile.label}
       </div>
       {(hasTime || hasDuration) && (
         <div style={{ fontSize: 11, color: tile.color.text, opacity: 0.7, marginTop: 4, fontFamily: "'DM Mono', monospace", fontWeight: 500 }}>
           {hasTime ? tile.startTime : ""}{hasTime && hasDuration ? " · " : ""}{hasDuration ? tile.duration : ""}
+        </div>
+      )}
+      {tile.type === "meal" && (tile.ingredients || tile.calories) && (
+        <div style={{ fontSize: 10, color: tile.color.text, opacity: 0.6, marginTop: 3, fontFamily: "'DM Mono', monospace" }}>
+          {tile.ingredients ? `${tile.ingredients.split(",").filter((s) => s.trim()).length} ingredients` : ""}
+          {tile.ingredients && tile.calories ? " · " : ""}
+          {tile.calories ? `${tile.calories} cal` : ""}
         </div>
       )}
     </div>
@@ -426,6 +524,109 @@ const PrintStyles = () => {
   return null;
 };
 
+// Grocery list modal
+const GroceryList = ({ tiles, weekRange, onClose }) => {
+  const [checked, setChecked] = useState({});
+
+  const items = (() => {
+    const map = {};
+    for (const day of DAYS) {
+      for (const tile of tiles[day] || []) {
+        if (tile.type !== "meal" || !tile.ingredients) continue;
+        for (const raw of tile.ingredients.split(",")) {
+          const name = raw.trim().toLowerCase();
+          if (!name) continue;
+          if (!map[name]) map[name] = { name, meals: [] };
+          map[name].meals.push(`${day} — ${tile.label}`);
+        }
+      }
+    }
+    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  })();
+
+  const toggleItem = (name) => setChecked((prev) => ({ ...prev, [name]: !prev[name] }));
+
+  const handleCopy = () => {
+    const text = items.filter((i) => !checked[i.name]).map((i) => `- ${i.name}`).join("\n");
+    navigator.clipboard.writeText(text);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+    }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        background: "#1e293b", borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw",
+        maxHeight: "80vh", display: "flex", flexDirection: "column",
+        boxShadow: "0 25px 60px rgba(0,0,0,0.5)", border: "1px solid #334155",
+        fontFamily: "'DM Sans', sans-serif",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#e2e8f0" }}>
+              {"\ud83d\uded2"} Grocery List
+            </div>
+            <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{weekRange}</div>
+          </div>
+          {items.length > 0 && (
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", background: "#0f172a", padding: "4px 10px", borderRadius: 12 }}>
+              {items.length} item{items.length !== 1 ? "s" : ""}
+            </div>
+          )}
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", marginBottom: 16 }}>
+          {items.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "#475569", fontSize: 13 }}>
+              No meal tiles yet. Add meals to generate a grocery list.
+            </div>
+          ) : items.map((item) => (
+            <div key={item.name} onClick={() => toggleItem(item.name)} style={{
+              display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 6px",
+              cursor: "pointer", borderRadius: 6, transition: "background 0.15s",
+            }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#0f172a"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            >
+              <div style={{
+                width: 18, height: 18, borderRadius: 4, border: "1px solid #475569", flexShrink: 0, marginTop: 1,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: checked[item.name] ? "#3b82f6" : "transparent",
+              }}>
+                {checked[item.name] && <span style={{ color: "#fff", fontSize: 12, lineHeight: 1 }}>{"\u2713"}</span>}
+              </div>
+              <div>
+                <div style={{
+                  fontSize: 14, color: checked[item.name] ? "#475569" : "#e2e8f0", fontWeight: 500,
+                  textDecoration: checked[item.name] ? "line-through" : "none",
+                }}>{item.name}</div>
+                <div style={{ fontSize: 10, color: "#475569", marginTop: 1 }}>
+                  {item.meals.join(", ")}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          {items.length > 0 && (
+            <button onClick={handleCopy} style={{
+              padding: "9px 16px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
+              background: "transparent", border: "1px solid #334155", borderRadius: 8, color: "#94a3b8",
+              cursor: "pointer", marginRight: "auto",
+            }}>{"\ud83d\udccb"} Copy</button>
+          )}
+          <button onClick={onClose} style={{
+            padding: "9px 18px", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
+            background: "#3b82f6", border: "none", borderRadius: 8, color: "#fff", cursor: "pointer",
+          }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function WeekPlanner() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [tiles, setTiles] = useState(() => {
@@ -435,6 +636,7 @@ export default function WeekPlanner() {
   });
   const [editing, setEditing] = useState(null);
   const [dragging, setDragging] = useState(null);
+  const [showGroceries, setShowGroceries] = useState(false);
 
   const isMobile = useMediaQuery("(max-width: 768px)");
   const [selectedDay, setSelectedDay] = useState(() => {
@@ -604,6 +806,15 @@ export default function WeekPlanner() {
           }}>
             <span style={{ fontSize: 15 }}>&#128197;</span> Export
           </button>
+          <button data-no-print onClick={() => setShowGroceries(true)} className="wtw-groceries-btn" style={{
+            padding: "7px 16px", borderRadius: 8, border: "1px solid #334155",
+            background: "transparent", color: "#94a3b8", cursor: "pointer",
+            fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+            textTransform: "uppercase", letterSpacing: 1,
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span style={{ fontSize: 15 }}>{"\ud83d\uded2"}</span> Groceries
+          </button>
         </div>
       </div>
 
@@ -696,14 +907,17 @@ export default function WeekPlanner() {
         }
       </div>
 
-      {/* Modal */}
+      {/* Modals */}
       {editing && (
         <TileEditor
-          tile={editing.tile || { label: "", color: PALETTE[0], startTime: "No time", duration: "No duration" }}
+          tile={editing.tile || { label: "", color: PALETTE[0], startTime: "No time", duration: "No duration", type: "task" }}
           onSave={handleSave}
           onDelete={handleDelete}
           onCancel={() => setEditing(null)}
         />
+      )}
+      {showGroceries && (
+        <GroceryList tiles={tiles} weekRange={formatWeekRange(dates)} onClose={() => setShowGroceries(false)} />
       )}
     </div>
   );
